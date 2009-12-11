@@ -153,6 +153,7 @@ tcp_server $option{host}, $option{socekt_port}, sub {
     });
 };
 
+print "Accepting requests at http://$option{host}:$option{port}/\n";
 $httpd->run;
 
 __END__
