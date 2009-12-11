@@ -149,7 +149,7 @@ chat.pl - AnyEvent based WebSocket chat demo
   Options:
       --help          show this help
       --host          address to bind (default 0.0.0.0)
-      --port http     port number (default: 9000)
+      --port          http port number (default: 9000)
       --socket_port   websocket port number (default: 9001)
 
 =head1 AUTHOR
