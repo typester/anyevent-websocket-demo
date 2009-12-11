@@ -34,6 +34,7 @@ my $httpd = AnyEvent::HTTPD->new(
     port => $option{port},
 );
 
+my @clients;
 $httpd->reg_cb(
     '' => sub {
         $_[1]->respond(
@@ -44,11 +45,28 @@ $httpd->reg_cb(
     '/' => sub {
         my ($h, $req) = @_;
 
+        $req->respond({
+            content => [
+                'text/html; charset=utf-8',
+                $mtf->render_file('index.mt'),
+            ],
+        });
+    },
+
+    '/chat' => sub {
+        my ($h, $req) = @_;
+
+        my ($room) = $req->url =~ m!^/chat/(.+)!;
+
+        $req->respond(
+            [404, 'not found', { 'Content-Type' => 'text/plain' }, 'not found']
+        ) unless $room;
+
         (my $host = $req->headers->{host}) =~ s/:\d+$//;
         $req->respond({
             content => [
                 'text/html; charset=utf-8',
-                $mtf->render_file('index.mt', $host, $option{socekt_port}),
+                $mtf->render_file('room.mt', $host, $option{socekt_port}, $room),
             ],
         });
     },
@@ -76,16 +94,17 @@ $httpd->reg_cb(
     },
 );
 
-my @clients;
+my %room;
 tcp_server $option{host}, $option{socekt_port}, sub {
     my ($fh, $address) = @_;
     die $! unless $fh;
 
+    my $room;
     my $h = AnyEvent::Handle->new( fh => $fh );
     $h->on_error(sub {
-        my ($h, $fatal, $msg) = @_;
-        warn 'err: ', $msg;
-        delete $clients[fileno($fh)];
+        warn 'err: ', $_[2];
+        delete $room{ $room }[fileno($fh)] if $room;
+        undef $h;
     });
 
     $h->push_read( line => qr/\x0d?\x0a\x0d?\x0a/, sub {
@@ -97,7 +116,6 @@ tcp_server $option{host}, $option{socekt_port}, sub {
         $err++ unless $env{HTTP_CONNECTION} eq 'Upgrade'
                   and $env{HTTP_UPGRADE} eq 'WebSocket';
         if ($err) {
-            delete $clients[fileno($fh)];
             undef $h;
             return;
         }
@@ -112,6 +130,9 @@ tcp_server $option{host}, $option{socekt_port}, sub {
         $h->push_write($handshake);
 
         # connection ready
+        ($room = $env{PATH_INFO}) =~ s!^/!!;
+        $room{ $room }[ fileno($fh) ] = $h;
+
         $h->on_read(sub {
             shift->push_read( line => "\xff", sub {
                 my ($h, $json) = @_;
@@ -124,14 +145,12 @@ tcp_server $option{host}, $option{socekt_port}, sub {
                 my $msg = $js->encode($data);
 
                 # broadcast
-                for my $c (grep { defined } @clients) {
+                for my $c (grep { defined } @{ $room{$room} || [] }) {
                     $c->push_write("\x00" . $msg . "\xff");
                 }
             });
         });
     });
-
-    $clients[ fileno($fh) ] = $h;
 };
 
 $httpd->run;
