@@ -14,6 +14,7 @@ use HTTP::Parser::XS qw(parse_http_request);
 use Text::MicroTemplate::File;
 use Path::Class qw/file dir/;
 use JSON::XS;
+use Digest::MD5 qw/md5/;
 
 GetOptions(
     \my %option,
@@ -120,34 +121,46 @@ tcp_server $option{host}, $option{socekt_port}, sub {
             return;
         }
 
-        my $handshake = join "\x0d\x0a",
-            'HTTP/1.1 101 Web Socket Protocol Handshake',
-            'Upgrade: WebSocket',
-            'Connection: Upgrade',
-            "WebSocket-Origin: $env{HTTP_ORIGIN}",
-            "WebSocket-Location: ws://$env{HTTP_HOST}$env{PATH_INFO}",
-            '', '';
-        $h->push_write($handshake);
+        # handle handshake
+        my $k1 = join '', grep /\d/, split '', $env{HTTP_SEC_WEBSOCKET_KEY1};
+        my $k2 = join '', grep /\d/, split '', $env{HTTP_SEC_WEBSOCKET_KEY2};
+        my $s1 = () = $env{HTTP_SEC_WEBSOCKET_KEY1} =~ /(\s)/g;
+        my $s2 = () = $env{HTTP_SEC_WEBSOCKET_KEY2} =~ /(\s)/g;
 
-        # connection ready
-        ($room = $env{PATH_INFO}) =~ s!^/!!;
-        $room{ $room }[ fileno($fh) ] = $h;
+        my $byte = pack('NN', $k1/$s1, $k2/$s2);
 
-        $h->on_read(sub {
-            shift->push_read( line => "\xff", sub {
-                my ($h, $json) = @_;
-                $json =~ s/^\0//;
+        $h->push_read( chunk => 8, sub {
+            my ($h, $chunk) = @_;
 
-                my $data = $js->decode($json);
-                $data->{address} = $address;
-                $data->{time} = time;
+            my $handshake = join "\x0d\x0a",
+                'HTTP/1.1 101 Web Socket Protocol Handshake',
+                'Upgrade: WebSocket',
+                'Connection: Upgrade',
+                "Sec-WebSocket-Origin: $env{HTTP_ORIGIN}",
+                "Sec-WebSocket-Location: ws://$env{HTTP_HOST}$env{PATH_INFO}",
+                '', md5($byte . $chunk);
+            $h->push_write($handshake);
 
-                my $msg = $js->encode($data);
+            # connection ready
+            ($room = $env{PATH_INFO}) =~ s!^/!!;
+            $room{ $room }[ fileno($fh) ] = $h;
 
-                # broadcast
-                for my $c (grep { defined } @{ $room{$room} || [] }) {
-                    $c->push_write("\x00" . $msg . "\xff");
-                }
+            $h->on_read(sub {
+                shift->push_read( line => "\xff", sub {
+                    my ($h, $json) = @_;
+                    $json =~ s/^\0//;
+
+                    my $data = $js->decode($json);
+                    $data->{address} = $address;
+                    $data->{time} = time;
+
+                    my $msg = $js->encode($data);
+
+                    # broadcast
+                    for my $c (grep { defined } @{ $room{$room} || [] }) {
+                        $c->push_write("\x00" . $msg . "\xff");
+                    }
+                });
             });
         });
     });
